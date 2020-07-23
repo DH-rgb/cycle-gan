@@ -4,7 +4,12 @@ import torch.nn.functional as F
 
 
 def init_weights(net):
-    torch.nn.init.normal(net.weight.data,0.0,0.02)
+    classname = net.__class__.__name__
+    if classname.find('Conv') != -1:
+        torch.nn.init.normal_(net.weight.data, 0.0, 0.02)
+    elif classname.find('BatchNorm2d') != -1:
+        torch.nn.init.normal_(net.weight.data, 1.0, 0.02)
+        torch.nn.init.constant(net.bias.data, 0.0)
 
 
 
@@ -14,12 +19,12 @@ class ResidualBlock(nn.Module):
         super(ResidualBlock, self).__init__()
         self.block = nn.Sequential(
             nn.ReflectionPad2d(1),
-            nn.Conv(256,256,kernel_size=3,stride=1),
+            nn.Conv2d(256,256,kernel_size=3,stride=1),
             nn.InstanceNorm2d(256),
             nn.ReLU(inplace=True),
             
             nn.ReflectionPad2d(1),
-            nn.Conv(256,256,kernel_size=3,stride=1),
+            nn.Conv2d(256,256,kernel_size=3,stride=1),
             nn.InstanceNorm2d(256)
         )
 
@@ -49,8 +54,9 @@ class Generator(nn.Module):
             nn.InstanceNorm2d(256),
             nn.ReLU(inplace=True),
         )
+        res_blocks = [ResidualBlock() for _ in range(res_block)]
         self.res_block = nn.Sequential(
-            [ResidualBlock(x) for _ in range(res_block)]
+            *res_blocks
         )
         self.decode_block = nn.Sequential(
             nn.ReflectionPad2d(1),

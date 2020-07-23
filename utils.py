@@ -3,9 +3,11 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.utils.data
 import torchvision.transforms as transforms
+from PIL import Image
 
 
 import random
+import os
 
 class ImagePool():
     def __init__(self,pool_size):
@@ -31,7 +33,7 @@ class ImagePool():
 
 class UnalignedDataset(torch.utils.data.Dataset):
 
-    def __init__(self, is_train):
+    def __init__(self, image_size, is_train):
         super(torch.utils.data.Dataset, self).__init__()
 
         root_dir = os.path.join('data', 'horse2zebra')
@@ -43,12 +45,14 @@ class UnalignedDataset(torch.utils.data.Dataset):
             dir_A = os.path.join(root_dir, 'testA')
             dir_B = os.path.join(root_dir, 'testB')
 
+        self.image_size = image_size
+
         self.image_paths_A = self._make_dataset(dir_A)
         self.image_paths_B = self._make_dataset(dir_B)
 
         self.size_A = len(self.image_paths_A)
         self.size_B = len(self.image_paths_B)
-
+        
         self.transform = self._make_transform(is_train)
 
     def __getitem__(self, index):
@@ -82,8 +86,8 @@ class UnalignedDataset(torch.utils.data.Dataset):
 
     def _make_transform(self, is_train):
         transforms_list = []
-        transforms_list.append(transforms.Resize((load_size, load_size), Image.BICUBIC))
-        transforms_list.append(transforms.RandomCrop(fine_size))
+        transforms_list.append(transforms.Resize(int(self.image_size*1.12), Image.BICUBIC))
+        transforms_list.append(transforms.RandomCrop(self.image_size))
         if is_train:
             transforms_list.append(transforms.RandomHorizontalFlip())
         transforms_list.append(transforms.ToTensor())

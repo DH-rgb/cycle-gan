@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn 
 import torch.nn.functional as F
 from torch.optim.lr_scheduler import LambdaLR
-from torchvision.utils import save_image
+from torchvision.utils import save_image, make_grid
 from torch.utils.tensorboard import SummaryWriter
 
 from model import Generator,Discriminator,init_weights
@@ -10,18 +10,25 @@ from utils import ImagePool,UnalignedDataset
 
 import argparse
 import time 
+import os
 from itertools import chain
 import matplotlib.pyplot as plt
 from PIL import Image
+import numpy as np 
 import pdb 
 
-def loss_scheduler(epoch,args):
-    #ベースの学習率に対する倍率を返す(pytorch仕様)
-    if epoch<=args.epoch_decay:
-        return 1
-    else:
-        scaling = 1 - (epoch-args.epoch_decay)/float(args.epoch_decay)
-        return scaling
+
+class loss_scheduler():
+    def __init__(self, args):
+        self.epoch_decay = args.epoch_decay
+
+    def f(self, epoch):
+        #ベースの学習率に対する倍率を返す(pytorch仕様)
+        if epoch<=self.epoch_decay:
+            return 1
+        else:
+            scaling = 1 - (epoch-self.epoch_decay)/float(self.epoch_decay)
+            return scaling
 
 
 def imshow(img):
@@ -56,7 +63,7 @@ def main():
     parser = argparse.ArgumentParser(description='PyTorch implementation: CycleGAN')
     #for train
     parser.add_argument('--image_size', '-i', type=int, default=256, help='input image size')
-    parser.add_argument('--batchsize', '-b', type=int, default=100,
+    parser.add_argument('--batch_size', '-b', type=int, default=100,
                         help='Number of images in each mini-batch')
     parser.add_argument('--epoch', '-e', type=int, default=200,
                         help='Number of epochs')
@@ -73,8 +80,7 @@ def main():
                         help='Frequency of taking a sample')
     parser.add_argument('--checkpoint_frequecy', '-cf', type=int, default=1,
                         help='Frequency of taking a checkpoint')
-    parser.add_argument('--dataset', '-d', type=int,
-                        help='Dataset name')
+    parser.add_argument('--dataset', '-d', help='Dataset name')
     parser.add_argument('--out', '-o', default='result/',
                         help='Directory to output the result')
     parser.add_argument('--model', '-m', help='Model name')
@@ -95,10 +101,10 @@ def main():
         res_block=9
     
     #set models
-    G_A2B = Generator(image_size,res_block).to(device)
-    G_B2A = Generator(image_size,res_block).to(device)
-    D_A = Discriminator(image_size).to(device)
-    D_B = Discriminator(image_size).to(device)
+    G_A2B = Generator(args.image_size,res_block).to(device)
+    G_B2A = Generator(args.image_size,res_block).to(device)
+    D_A = Discriminator(args.image_size).to(device)
+    D_B = Discriminator(args.image_size).to(device)
 
     #init weights
     G_A2B.apply(init_weights)
@@ -114,11 +120,11 @@ def main():
     optimizer_G = torch.optim.Adam(chain(G_A2B.parameters(),G_B2A.parameters()),lr=args.lr,betas=(args.beta1,0.999))
     optimizer_D = torch.optim.Adam(chain(D_A.parameters(),D_B.parameters()), lr=args.lr,betas=(args.beta1,0.999))
     
-    scheduler_G = LambdaLR(optimizer_G,lr_lanbda=loss_scheduler)
-    scheduler_D = LambdaLR(optimizer_D,lr_lanbda=loss_scheduler)
+    scheduler_G = LambdaLR(optimizer_G,lr_lambda=loss_scheduler(args).f)
+    scheduler_D = LambdaLR(optimizer_D,lr_lambda=loss_scheduler(args).f)
 
     #dataset loading
-    dataset = UnalignedDataset(is_train=True)
+    train_dataset = UnalignedDataset(args.image_size, is_train=True)
     train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=0)
 
     #######################################################################################
