@@ -3,7 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.optim.lr_scheduler import LambdaLR
 from torchvision.utils import save_image
-from tensorboardX import SummaryWriter
+from torch.utils.tensorboard import SummaryWriter
 
 from model import Generator,Discriminator,init_weights
 from utils import ImagePool,UnalignedDataset
