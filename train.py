@@ -4,17 +4,21 @@ import torch.nn.functional as F
 from torch.optim.lr_scheduler import LambdaLR
 from torchvision.utils import save_image, make_grid
 from torch.utils.tensorboard import SummaryWriter
+import torchvision.transforms as transforms
+from torch.utils.data import DataLoader
 
 from model import Generator,Discriminator,init_weights
-from utils import ImagePool,UnalignedDataset
+from utils import ImagePool,UnalignedDataset,CycleGANDataset
 
 import argparse
 import time 
 import os
+import sys
 from itertools import chain
 import matplotlib.pyplot as plt
 from PIL import Image
 import numpy as np 
+from memory_profiler import profile
 import pdb 
 
 
@@ -31,31 +35,13 @@ class loss_scheduler():
             return scaling
 
 
-def imshow(img):
-    npimg = img.numpy()
-    npimg = 0.5 * (npimg + 1)  # [-1,1] => [0, 1]
-    # [c, h, w] => [h, w, c]
-    plt.imshow(np.transpose(npimg, (1, 2, 0)))
-
-
-def debug_test(train_loader):
-    batch = iter(train_loader).next()
-    print(batch['A'].shape)
-    print(batch['B'].shape)
-    print(batch['path_A'])
-    print(batch['path_B'])
-    images_A = batch['A']  # horses
-    images_B = batch['B']  # zebras
-
-    plt.figure(figsize=(10, 20))
-
-    plt.subplot(1, 2, 1)
-    imshow(make_grid(images_A, nrow=4))
-    plt.axis('off')
-
-    plt.subplot(1, 2, 2)
-    imshow(make_grid(images_B, nrow=4))
-    plt.axis('off')
+def set_requires_grad(models, requires=False):
+    if not isinstance(models,list):
+        models = [models]
+    for model in models:
+        if model is not None:
+            for param in model.parameters():
+                param.requires_grad = requires
 
 
 
@@ -63,7 +49,7 @@ def main():
     parser = argparse.ArgumentParser(description='PyTorch implementation: CycleGAN')
     #for train
     parser.add_argument('--image_size', '-i', type=int, default=256, help='input image size')
-    parser.add_argument('--batch_size', '-b', type=int, default=100,
+    parser.add_argument('--batch_size', '-b', type=int, default=1,
                         help='Number of images in each mini-batch')
     parser.add_argument('--epoch', '-e', type=int, default=200,
                         help='Number of epochs')
@@ -72,17 +58,19 @@ def main():
     parser.add_argument('--beta1', type=float, default=0.5, help='momentum term of adam')
     parser.add_argument('--lr', type=float, default=0.0002, help='learning rate')
     parser.add_argument('--pool_size', type=int, default=50, help='for discriminator: the size of image buffer that stores previously generated images')
-    parser.add_argument('--lambda_cycle', type=float, default=10, help='Assumptive weight of cycle consistency loss')
+    parser.add_argument('--lambda_cycle', type=float, default=10.0, help='Assumptive weight of cycle consistency loss')
     parser.add_argument('--gpu', '-g', type=int, default=-1,
                         help='GPU ID (negative value indicates CPU)')
     #for save and load
-    parser.add_argument('--sample_frequecy', '-sf', type=int, default=100,
+    parser.add_argument('--sample_frequecy', '-sf', type=int, default=5000,
                         help='Frequency of taking a sample')
     parser.add_argument('--checkpoint_frequecy', '-cf', type=int, default=1,
                         help='Frequency of taking a checkpoint')
     parser.add_argument('--dataset', '-d', help='Dataset name')
     parser.add_argument('--out', '-o', default='result/',
                         help='Directory to output the result')
+    parser.add_argument('--log_dir', '-l', default='logs/',
+                        help='Directory to output the log')
     parser.add_argument('--model', '-m', help='Model name')
     args = parser.parse_args()
 
@@ -90,7 +78,8 @@ def main():
 
     #set GPU or CPU
     if args.gpu >= 0 and torch.cuda.is_available():
-        device = 'cuda:{}'.format(args.gpu)
+        # device = 'cuda:{}'.format(args.gpu)
+        device = 'cuda'
     else:
         device = 'cpu'
 
@@ -101,10 +90,29 @@ def main():
         res_block=9
     
     #set models
-    G_A2B = Generator(args.image_size,res_block).to(device)
-    G_B2A = Generator(args.image_size,res_block).to(device)
-    D_A = Discriminator(args.image_size).to(device)
-    D_B = Discriminator(args.image_size).to(device)
+    G_A2B = Generator(3,res_block).to(device)
+    G_B2A = Generator(3,res_block).to(device)
+    D_A = Discriminator(3).to(device)
+    D_B = Discriminator(3).to(device)
+
+    if device == 'cuda':
+        G_A2B = torch.nn.DataParallel(G_A2B)
+        G_B2A = torch.nn.DataParallel(G_B2A)
+        D_A = torch.nn.DataParallel(D_A)
+        D_B = torch.nn.DataParallel(D_B)
+        torch.backends.cudnn.benchmark=True
+
+    #check params
+    # print(G_A2B)
+    # print("----------------------------")
+    # print(G_B2A)
+    # print("----------------------------")
+    # print(D_A)
+    # print("----------------------------")
+    # print(D_B)
+    # pdb.set_trace()
+
+
 
     #init weights
     G_A2B.apply(init_weights)
@@ -118,18 +126,21 @@ def main():
 
     #set optimizers
     optimizer_G = torch.optim.Adam(chain(G_A2B.parameters(),G_B2A.parameters()),lr=args.lr,betas=(args.beta1,0.999))
-    optimizer_D = torch.optim.Adam(chain(D_A.parameters(),D_B.parameters()), lr=args.lr,betas=(args.beta1,0.999))
+    # optimizer_D = torch.optim.Adam(chain(D_A.parameters(),D_B.parameters()), lr=args.lr,betas=(args.beta1,0.999))
+    optimizer_D_A = torch.optim.Adam(D_A.parameters(), lr=args.lr, betas=(args.beta1,0.999))
+    optimizer_D_B = torch.optim.Adam(D_B.parameters(), lr=args.lr, betas=(args.beta1,0.999))
     
     scheduler_G = LambdaLR(optimizer_G,lr_lambda=loss_scheduler(args).f)
-    scheduler_D = LambdaLR(optimizer_D,lr_lambda=loss_scheduler(args).f)
+    scheduler_D_A = LambdaLR(optimizer_D_A,lr_lambda=loss_scheduler(args).f)
+    scheduler_D_B = LambdaLR(optimizer_D_B,lr_lambda=loss_scheduler(args).f)
 
     #dataset loading
     train_dataset = UnalignedDataset(args.image_size, is_train=True)
     train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=0)
 
     #######################################################################################
-    debug_test(train_loader)
-    pdb.set_trace()
+    # debug_test(train_loader)
+    # pdb.set_trace()
 
     #train
     total_epoch = args.epoch
@@ -138,7 +149,10 @@ def main():
     fake_B_buffer = ImagePool()
 
     for epoch in range(total_epoch):
-        for i, data in enumerate(dataset):
+        start = time.time()
+        losses = [0 for i in range(6)]
+        for i, data in enumerate(train_loader):
+
             #generate image
             real_A = data['A'].to(device)
             real_B = data['B'].to(device)
@@ -146,61 +160,104 @@ def main():
             rec_A, rec_B = G_B2A(fake_B), G_A2B(fake_A)
 
             #train generator
+            set_requires_grad([D_A,D_B],False)
+            # set_requires_grad([G_A2B,G_B2A],True)
             optimizer_G.zero_grad()
 
             pred_fake_A = D_A(fake_A)
-            loss_G_B2A = adv_loss(pred_fake_A, torch.tensor(1).expand_as(pred_fake_A))
+            loss_G_B2A = adv_loss(pred_fake_A, torch.tensor(1.0).expand_as(pred_fake_A).to(device))
             
             pred_fake_B = D_B(fake_B)
-            loss_G_A2B = adv_loss(pred_fake_B, torch.tensor(1).expand_as(pred_fake_B))
+            loss_G_A2B = adv_loss(pred_fake_B, torch.tensor(1.0).expand_as(pred_fake_B).to(device))
 
             loss_cycle_A = cycle_loss(rec_A, real_A)
             loss_cycle_B = cycle_loss(rec_B, real_B)
 
-            loss_G = loss_G_A2B + loss_G_B2A + loss_cycle_A*lambda_cycle + loss_cycle_B*lambda_cycle
+            loss_G = loss_G_A2B + loss_G_B2A + loss_cycle_A*args.lambda_cycle + loss_cycle_B*args.lambda_cycle
+            # pdb.set_trace()
             loss_G.backward()
             optimizer_G.step()
 
-            #train discriminator
-            optimizer_D.zero_grad()
+            losses[0]+=loss_G_A2B.item()
+            losses[1]+=loss_G_B2A.item()
+            losses[2]+=loss_cycle_A.item()
+            losses[3]+=loss_cycle_B.item()
 
+
+            #train discriminator
+            set_requires_grad([D_A,D_B],True)
+            # set_requires_grad([G_A2B,G_B2A],False)
+            optimizer_D_A.zero_grad()
             pred_real_A = D_A(real_A)
-            pred_fake_A = D_A(fake_A_buffer.get_images(fake_A).detach())
-            loss_D_A_real = adv_loss(pred_real_A, torch.tensor(1).expand_as(pred_real_A))
-            loss_D_A_fake = adv_loss(pred_fake_A, torch.tensor(0).expand_as(pred_fake_A))
+            fake_A_ = fake_A_buffer.get_images(fake_A)
+            pred_fake_A = D_A(fake_A_.detach())
+            # pred_fake_A = D_A(fake_A)
+            loss_D_A_real = adv_loss(pred_real_A, torch.tensor(1.0).expand_as(pred_real_A).to(device))
+            loss_D_A_fake = adv_loss(pred_fake_A, torch.tensor(0.0).expand_as(pred_fake_A).to(device))
             loss_D_A = (loss_D_A_fake + loss_D_A_real)*0.5
             loss_D_A.backward()
+            optimizer_D_A.step()
 
+            optimizer_D_B.zero_grad()
             pred_real_B = D_B(real_B)
-            pred_fake_B = D_B(fake_B_buffer.get_images(fake_B).detach())
-            loss_D_B_real = adv_loss(pred_real_B, torch.tensor(1).expand_as(pred_real_B))
-            loss_D_B_fake = adv_loss(pred_fake_B, torch.tensor(0).expand_as(pred_fake_B))
+            fake_B_ = fake_B_buffer.get_images(fake_B)
+            pred_fake_B = D_B(fake_B_.detach())
+            # pred_fake_B = D_B(fake_B)
+            loss_D_B_real = adv_loss(pred_real_B, torch.tensor(1.0).expand_as(pred_real_B).to(device))
+            loss_D_B_fake = adv_loss(pred_fake_B, torch.tensor(0.0).expand_as(pred_fake_B).to(device))
             loss_D_B = (loss_D_B_fake + loss_D_B_real)*0.5
             loss_D_B.backward()
+            optimizer_D_B.step()
 
-            optimizer_D.step()
+            losses[4]+=loss_D_A.item() 
+            losses[5]+=loss_D_B.item()
 
             #get sample
-            if (epoch * len(train_dataloader) + i)&sample_frequency ==0:
-                # real_A_sample = real_A.cpu().detach().numpy()[0]
-                # real_B_sampel = real_B.cpu().detach().numpy()[0]
-                # fake_A_sample = fake_A.cpu().detach().numpy()[0]
-                # fake_B_sample = fake_B.cpu().detach().numpy()[0]
-                # rec_A_sample = rec_A.cpu().detach().numpy()[0]
-                # rec_B_sample = rec_B.cpu().detach().numpy()[0]
-                images_sample = torch.cat((real_A.data, fake_A.data, rec_A.data, real_B.data, fake_B.data, rec_B.data),0)
-                save_image(images_sample, "sample/" + model + "/" + str(epoch * len(train_dataloader) + i) + ".png", nrow=5, normalize=True)
+            if (epoch * len(train_loader) + i)%args.sample_frequecy ==0:
+                images_sample = torch.cat((real_A.data, fake_B.data, rec_A.data, real_B.data, fake_A.data, rec_B.data),0)
+                if not os.path.exists("sample/" + args.model):
+                    os.makedirs("sample/" + args.model)
+                save_image(images_sample, "sample/" + args.model + "/" + str(epoch * len(train_loader) + i) + ".png", nrow=3, normalize=True)
+                
     
+            current_batch = epoch * len(train_loader) + i
+            sys.stdout.write(f"\r[Epoch {epoch+1}/200] [Index {i}/{len(train_loader)}] [D_A loss: {loss_D_A.item():.4f}] [D_B loss: {loss_D_B.item():.4f}] [G loss: adv: {loss_G.item():.4f}] [lr: {scheduler_G.get_lr()}]")
             
+        
+        
+        #get tensorboard logs
+        if not os.path.exists(args.log_dir + args.model):
+            os.makedirs(args.log_dir + args.model)
+        writer = SummaryWriter(args.log_dir + args.model)
+        writer.add_scalar('loss_G_A2B', losses[0]/float(len(train_loader)), epoch)
+        writer.add_scalar('loss_D_A', losses[4]/float(len(train_loader)), epoch)
+        writer.add_scalar('loss_G_B2A', losses[1]/float(len(train_loader)), epoch)
+        writer.add_scalar('loss_D_B', losses[5]/float(len(train_loader)), epoch)
+        writer.add_scalar('loss_cycle_A', losses[2]/float(len(train_loader)), epoch)
+        writer.add_scalar('loss_cycle_B', losses[3]/float(len(train_loader)), epoch)
+        writer.add_scalar('learning_rate_G', np.array(scheduler_G.get_lr()), epoch)
+        writer.add_scalar('learning_rate_D_A', np.array(scheduler_D_A.get_lr()), epoch)
+        writer.add_scalar('learning_rate_D_B', np.array(scheduler_D_B.get_lr()), epoch)
+        sys.stdout.write(f"[Epoch {epoch+1}/200] [D_A loss: {losses[4]/float(len(train_loader)):.4f}] [D_B loss: {losses[5]/float(len(train_loader)):.4f}] [G adv loss: adv: {losses[0]/float(len(train_loader))+losses[1]/float(len(train_loader)):.4f}]")
+        
         #update learning rate
         scheduler_G.step()
-        scheduler_D.step()
+        scheduler_D_A.step()
+        scheduler_D_B.step()
         
-        if epoch % opts.checkpoint_every == 0:
-            torch.save(G_A2B.state_dict(), "models/"+model+"/G_A2B/"+str(epoch)+".pth")
-            torch.save(G_B2A.state_dict(), "models/"+model+"/G_B2A/"+str(epoch)+".pth")
-            torch.save(D_A.state_dict(), "models/"+model+"/D_A/"+str(epoch)+".pth")
-            torch.save(D_B.state_dict(), "models/"+model+"/D_B/"+str(epoch)+".pth")
+        if epoch % args.checkpoint_frequecy == 0:
+            if not os.path.exists("models/"+args.model+"/G_A2B/"):
+                os.makedirs("models/"+args.model+"/G_A2B/")
+            if not os.path.exists("models/"+args.model+"/G_B2A/"):
+                os.makedirs("models/"+args.model+"/G_B2A/")
+            if not os.path.exists("models/"+args.model+"/D_A/"):
+                os.makedirs("models/"+args.model+"/D_A/")
+            if not os.path.exists("models/"+args.model+"/D_B/"):
+                os.makedirs("models/"+args.model+"/D_B/")
+            torch.save(G_A2B.state_dict(), "models/"+args.model+"/G_A2B/"+str(epoch)+".pth")
+            torch.save(G_B2A.state_dict(), "models/"+args.model+"/G_B2A/"+str(epoch)+".pth")
+            torch.save(D_A.state_dict(), "models/"+args.model+"/D_A/"+str(epoch)+".pth")
+            torch.save(D_B.state_dict(), "models/"+args.model+"/D_B/"+str(epoch)+".pth")
 
 
 
