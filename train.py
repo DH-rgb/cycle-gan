@@ -8,8 +8,7 @@ import torchvision.transforms as transforms
 from torch.utils.data import DataLoader
 
 from model import Generator,Discriminator,init_weights
-from utils import ImagePool,UnalignedDataset,CycleGANDataset
-
+from utils import ImagePool,BasicDataset
 import argparse
 import time 
 import os
@@ -64,9 +63,9 @@ def main():
     #for save and load
     parser.add_argument('--sample_frequecy', '-sf', type=int, default=5000,
                         help='Frequency of taking a sample')
-    parser.add_argument('--checkpoint_frequecy', '-cf', type=int, default=1,
+    parser.add_argument('--checkpoint_frequecy', '-cf', type=int, default=10,
                         help='Frequency of taking a checkpoint')
-    parser.add_argument('--dataset', '-d', help='Dataset name')
+    parser.add_argument('--data_name', '-d', default="horse2zebra", help='Dataset name')
     parser.add_argument('--out', '-o', default='result/',
                         help='Directory to output the result')
     parser.add_argument('--log_dir', '-l', default='logs/',
@@ -78,7 +77,6 @@ def main():
 
     #set GPU or CPU
     if args.gpu >= 0 and torch.cuda.is_available():
-        # device = 'cuda:{}'.format(args.gpu)
         device = 'cuda'
     else:
         device = 'cpu'
@@ -95,23 +93,13 @@ def main():
     D_A = Discriminator(3).to(device)
     D_B = Discriminator(3).to(device)
 
-    if device == 'cuda':
-        G_A2B = torch.nn.DataParallel(G_A2B)
-        G_B2A = torch.nn.DataParallel(G_B2A)
-        D_A = torch.nn.DataParallel(D_A)
-        D_B = torch.nn.DataParallel(D_B)
-        torch.backends.cudnn.benchmark=True
-
-    #check params
-    # print(G_A2B)
-    # print("----------------------------")
-    # print(G_B2A)
-    # print("----------------------------")
-    # print(D_A)
-    # print("----------------------------")
-    # print(D_B)
-    # pdb.set_trace()
-
+    # data pararell
+    # if device == 'cuda':
+    #     G_A2B = torch.nn.DataParallel(G_A2B)
+    #     G_B2A = torch.nn.DataParallel(G_B2A)
+    #     D_A = torch.nn.DataParallel(D_A)
+    #     D_B = torch.nn.DataParallel(D_B)
+    #     torch.backends.cudnn.benchmark=True
 
 
     #init weights
@@ -126,7 +114,6 @@ def main():
 
     #set optimizers
     optimizer_G = torch.optim.Adam(chain(G_A2B.parameters(),G_B2A.parameters()),lr=args.lr,betas=(args.beta1,0.999))
-    # optimizer_D = torch.optim.Adam(chain(D_A.parameters(),D_B.parameters()), lr=args.lr,betas=(args.beta1,0.999))
     optimizer_D_A = torch.optim.Adam(D_A.parameters(), lr=args.lr, betas=(args.beta1,0.999))
     optimizer_D_B = torch.optim.Adam(D_B.parameters(), lr=args.lr, betas=(args.beta1,0.999))
     
@@ -135,12 +122,10 @@ def main():
     scheduler_D_B = LambdaLR(optimizer_D_B,lr_lambda=loss_scheduler(args).f)
 
     #dataset loading
-    train_dataset = UnalignedDataset(args.image_size, is_train=True)
+    train_dataset = BasicDataset(args.data_name, args.image_size, is_train=True)
     train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=0)
 
     #######################################################################################
-    # debug_test(train_loader)
-    # pdb.set_trace()
 
     #train
     total_epoch = args.epoch
@@ -152,7 +137,6 @@ def main():
         start = time.time()
         losses = [0 for i in range(6)]
         for i, data in enumerate(train_loader):
-
             #generate image
             real_A = data['A'].to(device)
             real_B = data['B'].to(device)
@@ -161,7 +145,6 @@ def main():
 
             #train generator
             set_requires_grad([D_A,D_B],False)
-            # set_requires_grad([G_A2B,G_B2A],True)
             optimizer_G.zero_grad()
 
             pred_fake_A = D_A(fake_A)
@@ -174,7 +157,6 @@ def main():
             loss_cycle_B = cycle_loss(rec_B, real_B)
 
             loss_G = loss_G_A2B + loss_G_B2A + loss_cycle_A*args.lambda_cycle + loss_cycle_B*args.lambda_cycle
-            # pdb.set_trace()
             loss_G.backward()
             optimizer_G.step()
 
@@ -186,12 +168,10 @@ def main():
 
             #train discriminator
             set_requires_grad([D_A,D_B],True)
-            # set_requires_grad([G_A2B,G_B2A],False)
             optimizer_D_A.zero_grad()
             pred_real_A = D_A(real_A)
             fake_A_ = fake_A_buffer.get_images(fake_A)
             pred_fake_A = D_A(fake_A_.detach())
-            # pred_fake_A = D_A(fake_A)
             loss_D_A_real = adv_loss(pred_real_A, torch.tensor(1.0).expand_as(pred_real_A).to(device))
             loss_D_A_fake = adv_loss(pred_fake_A, torch.tensor(0.0).expand_as(pred_fake_A).to(device))
             loss_D_A = (loss_D_A_fake + loss_D_A_real)*0.5
@@ -202,7 +182,6 @@ def main():
             pred_real_B = D_B(real_B)
             fake_B_ = fake_B_buffer.get_images(fake_B)
             pred_fake_B = D_B(fake_B_.detach())
-            # pred_fake_B = D_B(fake_B)
             loss_D_B_real = adv_loss(pred_real_B, torch.tensor(1.0).expand_as(pred_real_B).to(device))
             loss_D_B_fake = adv_loss(pred_fake_B, torch.tensor(0.0).expand_as(pred_fake_B).to(device))
             loss_D_B = (loss_D_B_fake + loss_D_B_real)*0.5
@@ -245,7 +224,7 @@ def main():
         scheduler_D_A.step()
         scheduler_D_B.step()
         
-        if epoch % args.checkpoint_frequecy == 0:
+        if (epoch+1) % args.checkpoint_frequecy == 0:
             if not os.path.exists("models/"+args.model+"/G_A2B/"):
                 os.makedirs("models/"+args.model+"/G_A2B/")
             if not os.path.exists("models/"+args.model+"/G_B2A/"):

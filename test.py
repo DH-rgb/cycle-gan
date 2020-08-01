@@ -8,7 +8,7 @@ import torchvision.transforms as transforms
 from torch.utils.data import DataLoader
 
 from model import Generator,Discriminator,init_weights
-from utils import ImagePool,UnalignedDataset,CycleGANDataset
+from utils import ImagePool,BasicDataset
 
 import argparse
 import time 
@@ -43,7 +43,7 @@ def main():
                         help='Frequency of taking a sample')
     parser.add_argument('--checkpoint_frequecy', '-cf', type=int, default=1,
                         help='Frequency of taking a checkpoint')
-    parser.add_argument('--dataset', '-d', help='Dataset name')
+    parser.add_argument('--data_name', '-d', default="horse2zebra", help='Dataset name')
     parser.add_argument('--out', '-o', default='result/',
                         help='Directory to output the result')
     parser.add_argument('--log_dir', '-l', default='logs/',
@@ -55,7 +55,6 @@ def main():
 
     #set GPU or CPU
     if args.gpu >= 0 and torch.cuda.is_available():
-        # device = 'cuda:{}'.format(args.gpu)
         device = 'cuda'
     else:
         device = 'cpu'
@@ -72,12 +71,13 @@ def main():
     D_A = Discriminator(3).to(device)
     D_B = Discriminator(3).to(device)
 
-    if device == 'cuda':
-        G_A2B = torch.nn.DataParallel(G_A2B)
-        G_B2A = torch.nn.DataParallel(G_B2A)
-        D_A = torch.nn.DataParallel(D_A)
-        D_B = torch.nn.DataParallel(D_B)
-        torch.backends.cudnn.benchmark=True
+    # data pararell
+    # if device == 'cuda':
+    #     G_A2B = torch.nn.DataParallel(G_A2B)
+    #     G_B2A = torch.nn.DataParallel(G_B2A)
+    #     D_A = torch.nn.DataParallel(D_A)
+    #     D_B = torch.nn.DataParallel(D_B)
+    #     torch.backends.cudnn.benchmark=True
 
     #load parameters
     G_A2B.load_state_dict(torch.load("models/"+args.model+"/G_A2B/"+str(args.epoch-1)+".pth"))
@@ -85,7 +85,7 @@ def main():
     D_A.load_state_dict(torch.load("models/"+args.model+"/D_A/"+str(args.epoch-1)+".pth"))
     D_B.load_state_dict(torch.load("models/"+args.model+"/D_B/"+str(args.epoch-1)+".pth"))
 
-    test_dataset = UnalignedDataset(args.image_size, is_train=False)
+    test_dataset = BasicDataset(args.data_name, args.image_size, is_train=False)
     test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=args.batch_size, shuffle=True, num_workers=0)
 
     with torch.no_grad():
