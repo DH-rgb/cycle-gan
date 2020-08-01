@@ -58,6 +58,7 @@ def main():
     parser.add_argument('--lr', type=float, default=0.0002, help='learning rate')
     parser.add_argument('--pool_size', type=int, default=50, help='for discriminator: the size of image buffer that stores previously generated images')
     parser.add_argument('--lambda_cycle', type=float, default=10.0, help='Assumptive weight of cycle consistency loss')
+    parser.add_argument('--lambda_identity', type=float, default=0, help='Assumptive weight of identity mapping loss')
     parser.add_argument('--gpu', '-g', type=int, default=-1,
                         help='GPU ID (negative value indicates CPU)')
     #for save and load
@@ -111,6 +112,7 @@ def main():
     #set loss functions
     adv_loss = nn.MSELoss()
     cycle_loss = nn.L1Loss()
+    identity_loss = nn.L1Loss()
 
     #set optimizers
     optimizer_G = torch.optim.Adam(chain(G_A2B.parameters(),G_B2A.parameters()),lr=args.lr,betas=(args.beta1,0.999))
@@ -142,6 +144,8 @@ def main():
             real_B = data['B'].to(device)
             fake_A, fake_B = G_B2A(real_B), G_A2B(real_A)
             rec_A, rec_B = G_B2A(fake_B), G_A2B(fake_A)
+            if args.lambda_identity>0:
+                iden_A, iden_B = G_B2A(real_A), G_A2B(real_B)
 
             #train generator
             set_requires_grad([D_A,D_B],False)
@@ -156,7 +160,13 @@ def main():
             loss_cycle_A = cycle_loss(rec_A, real_A)
             loss_cycle_B = cycle_loss(rec_B, real_B)
 
-            loss_G = loss_G_A2B + loss_G_B2A + loss_cycle_A*args.lambda_cycle + loss_cycle_B*args.lambda_cycle
+            if args.lambda_identity>0:
+                loss_identity_A = identity_loss(iden_A,real_A)
+                loss_identity_B = identity_loss(iden_B,real_B)
+                loss_G = loss_G_A2B + loss_G_B2A + loss_cycle_A*args.lambda_cycle + loss_cycle_B*args.lambda_cycle + loss_identity_A*args.lambda_cycle*args.lambda_identity + loss_identity_B*args.lambda_cycle*args.lambda_identity
+            else:
+                loss_G = loss_G_A2B + loss_G_B2A + loss_cycle_A*args.lambda_cycle + loss_cycle_B*args.lambda_cycle
+
             loss_G.backward()
             optimizer_G.step()
 
