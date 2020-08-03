@@ -1,6 +1,8 @@
 # CycelGANのPytorch実装
 細かい話は以下記事へ．
 
+https://qiita.com/raglag/items/cfbe89b87335237c5ff2
+
 # 実行環境
 python: 3.7.7
 pytorch: 1.5.1
