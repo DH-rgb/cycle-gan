@@ -164,6 +164,7 @@ def main():
                 loss_identity_A = identity_loss(iden_A,real_A)
                 loss_identity_B = identity_loss(iden_B,real_B)
                 loss_G = loss_G_A2B + loss_G_B2A + loss_cycle_A*args.lambda_cycle + loss_cycle_B*args.lambda_cycle + loss_identity_A*args.lambda_cycle*args.lambda_identity + loss_identity_B*args.lambda_cycle*args.lambda_identity
+
             else:
                 loss_G = loss_G_A2B + loss_G_B2A + loss_cycle_A*args.lambda_cycle + loss_cycle_B*args.lambda_cycle
 
